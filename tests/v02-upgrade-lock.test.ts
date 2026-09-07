@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { acquireV02UpgradeLock } from '../src/infra/v02-upgrade-lock.ts'
+import { repoNodeArgs } from './helpers/repo-node-args.ts'
+import { spawnTestPeer } from './helpers/test-peer.ts'
 
 test('a real second Node process cannot acquire the fixed upgrade lock', async () => {
   const root = await mkdtemp(join(tmpdir(), 'clickvibe-v02-lock-'))
@@ -17,20 +18,31 @@ test('a real second Node process cannot acquire the fixed upgrade lock', async (
     console.log('LOCKED');
     setTimeout(async () => { await lock.release(); process.exit(0) }, 1200);
   `
-  const child = spawn(process.execPath, ['--input-type=module', '-e', script], { stdio: ['ignore', 'pipe', 'pipe'] })
+  const peer = spawnTestPeer(process.execPath, [...repoNodeArgs, '--input-type=module', '-e', script], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  const child = peer.process
   try {
     let output = ''
-    while (!output.includes('LOCKED')) {
-      const [chunk] = (await once(child.stdout, 'data')) as [Buffer]
-      output += chunk.toString('utf8')
-    }
+    await peer.awaitResponse(
+      (async () => {
+        while (!output.includes('LOCKED')) {
+          const [chunk] = (await once(child.stdout, 'data')) as [Buffer]
+          output += chunk.toString('utf8')
+        }
+      })(),
+      'LOCKED on stdout',
+    )
     await assert.rejects(acquireV02UpgradeLock(lockPath, 'parent-plan'), /already locked/)
-    const [exitCode] = (await once(child, 'exit')) as [number]
-    assert.equal(exitCode, 0)
+    // The exit wait rides the binding captured at spawn: the child self-exits
+    // 1200ms after LOCKED, so a bare `once(exit)` registered here races an
+    // exit that already happened and would hang forever (issue #7).
+    const exit = await peer.awaitExit('the lock child to release and exit with code 0')
+    assert.equal(exit.code, 0)
     const parent = await acquireV02UpgradeLock(lockPath, 'parent-plan')
     await parent.release()
   } finally {
-    if (child.exitCode === null) child.kill()
+    await peer.stop()
     await rm(root, { recursive: true, force: true })
   }
 })

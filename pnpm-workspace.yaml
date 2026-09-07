@@ -1,0 +1,5 @@
+# esbuild's postinstall only verifies the binary that @esbuild/<platform> already
+# ships as an optional dependency; refusing it keeps installs script-free. tsx
+# (the TypeScript test runner) was verified working against the platform package.
+allowBuilds:
+  esbuild: false

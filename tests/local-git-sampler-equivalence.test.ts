@@ -213,7 +213,12 @@ test('unresolved merge (MERGE_HEAD) reports conflict identically', async () => {
     await commit(repo, 'f.txt', 'side', 'side')
     await git(repo, 'checkout', 'main')
     await commit(repo, 'f.txt', 'main', 'main')
-    await execFileAsync('git', ['-C', repo, 'merge', 'side'], { encoding: 'utf8' }).catch(() => {})
+    // git >=2.5x validates the committer identity before merging (even when the
+    // merge will conflict), so the fixture must carry one like `commit()` does —
+    // otherwise no MERGE_HEAD is ever written on hosts without a global identity.
+    await execFileAsync('git', ['-C', repo, '-c', 'user.email=t@t', '-c', 'user.name=t', 'merge', 'side'], {
+      encoding: 'utf8',
+    }).catch(() => {})
 
     const mergeHead = await git(repo, 'rev-parse', '--verify', 'MERGE_HEAD').catch(() => null)
     assert.ok(mergeHead, 'fixture must leave MERGE_HEAD in place')

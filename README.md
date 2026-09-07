@@ -79,13 +79,12 @@ fetchTtlSeconds: 45  # 查看状态时自动 fetch 的 TTL，可配置为 30–6
 ```
 
 ```sh
-# 3. (开发者)构建与测试
-#    运行时要求 Node >= 24(package.json engines 同步锁定):pnpm test 用 node --test
-#    直接执行 .ts,依赖原生 type stripping;Node 22 及更早会报
-#    ERR_UNKNOWN_FILE_EXTENSION,全部测试无法加载。CI 固定 node-version 24。
+# 3. (开发者)构建与测试(环境要求见下方「开发环境要求」段落;CI 固定 node-version 24)
 pnpm install && pnpm run build
 pnpm test
 ```
+
+开发环境要求:Node ≥22(已验证 22.22.1 与 24 LTS;不要求 Node 内建 TypeScript 类型剥离——发行版构建的 Node 同样可跑)、pnpm(版本由 `packageManager` 字段锁定为 11.21.0)。测试经 devDependency `tsx`(esbuild)在进程内转译 TypeScript 后交给 `node --test` 执行,`pnpm test` / `pnpm run coverage` 无需任何全局工具。测试文件固定串行执行(`--test-concurrency=1`,固化在 npm scripts):并发度不再随机器核数变化,跨文件时序干扰与峰值内存占用固定,计数逐机器可复现(issue #5)。
 
 重启 `dsh web` 后,在侧栏底部点 **ClickVibe** 打开面板,选项目,点「开始开发」即可。client 端改动硬刷新浏览器(⌘⇧R)即可生效。
 

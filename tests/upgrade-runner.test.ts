@@ -14,13 +14,14 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import test from 'node:test'
+import { repoNodeArgs } from './helpers/repo-node-args.ts'
 
 const execFileAsync = promisify(execFile)
 
 const RUNNER = join('scripts', 'upgrade-v0.2.mjs')
 
 function run(args) {
-  return spawnSync(process.execPath, [RUNNER, ...args], { encoding: 'utf8', cwd: process.cwd() })
+  return spawnSync(process.execPath, [...repoNodeArgs, RUNNER, ...args], { encoding: 'utf8', cwd: process.cwd() })
 }
 
 /** A parallel suite may run the fence suite's decoy `clickvibe-v0.1-plugin`

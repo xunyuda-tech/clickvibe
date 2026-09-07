@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import test from 'node:test'
+import { repoNodeArgs } from './helpers/repo-node-args.ts'
+import { spawnTestPeer } from './helpers/test-peer.ts'
 import { commitWorkflowFixture } from './workflow-fixture.ts'
 import { finishTask, waitForTaskPersistence } from '../src/agent/task-supervisor.ts'
 import { LineLog } from '../src/infra/develop-core.ts'
@@ -90,41 +91,50 @@ for await (const line of createInterface({ input: process.stdin })) {
 `
 
 async function startWorker(home: string) {
-  const child = spawn(process.execPath, ['--input-type=module', '--eval', workerSource], {
+  const peer = spawnTestPeer(process.execPath, [...repoNodeArgs, '--input-type=module', '--eval', workerSource], {
     cwd: process.cwd(),
     env: { ...process.env, HOME: home },
   })
+  const child = peer.process
   const responses: Array<(response: { saved?: boolean; result?: unknown; agentStarts?: number }) => void> = []
   const output = createInterface({ input: child.stdout })
-  child.stderr.resume()
-  await once(output, 'line')
+  await peer.awaitResponse(once(output, 'line'), 'worker ready line')
   output.on('line', (line) => {
     responses.shift()?.(JSON.parse(line) as { saved?: boolean; result?: unknown; agentStarts?: number })
   })
   return {
     process: child,
+    stop: () => peer.stop(),
     run: (
       workflow: IssueWorkflow,
       credential?: { kind: 'review'; taskId: string },
       metadata?: { prNumber?: string | null },
     ) =>
-      new Promise<boolean>((resolve) => {
-        responses.push((response) => resolve(Boolean(response.saved)))
-        child.stdin.write(
-          `${JSON.stringify({
-            workflow,
-            credential: credential ? { ...credential, taskStateRevision: workflow.taskStateRevision ?? 0 } : undefined,
-            expectedRevision: workflow.revision ?? null,
-            expectedTaskStateRevision: workflow.taskStateRevision ?? 0,
-            metadata,
-          })}\n`,
-        )
-      }),
+      peer.awaitResponse(
+        new Promise<boolean>((resolve) => {
+          responses.push((response) => resolve(Boolean(response.saved)))
+          child.stdin.write(
+            `${JSON.stringify({
+              workflow,
+              credential: credential
+                ? { ...credential, taskStateRevision: workflow.taskStateRevision ?? 0 }
+                : undefined,
+              expectedRevision: workflow.revision ?? null,
+              expectedTaskStateRevision: workflow.taskStateRevision ?? 0,
+              metadata,
+            })}\n`,
+          )
+        }),
+        'worker response line',
+      ),
     resume: (url: string) =>
-      new Promise<{ result: { ok: boolean; taskId?: string; error?: string }; agentStarts: number }>((resolve) => {
-        responses.push((response) => resolve(response as never))
-        child.stdin.write(`${JSON.stringify({ resume: url })}\n`)
-      }),
+      peer.awaitResponse(
+        new Promise<{ result: { ok: boolean; taskId?: string; error?: string }; agentStarts: number }>((resolve) => {
+          responses.push((response) => resolve(response as never))
+          child.stdin.write(`${JSON.stringify({ resume: url })}\n`)
+        }),
+        'worker resume response line',
+      ),
   }
 }
 
@@ -248,10 +258,7 @@ test('cross-process task writes and resume claims preserve the winning generatio
     assert.equal(await staleWorker.run(recovered, undefined, { prNumber: '9999' }), true)
     assert.equal((await loadWorkflow(recovered.key))?.prNumber, '9999')
   } finally {
-    const exits = [once(staleWorker.process, 'exit'), once(successorWorker.process, 'exit')]
-    staleWorker.process.kill()
-    successorWorker.process.kill()
-    await Promise.all(exits)
+    await Promise.all([staleWorker.stop(), successorWorker.stop()])
     if (previousHome === undefined) delete process.env.HOME
     else process.env.HOME = previousHome
     await rm(tempHome, { recursive: true, force: true })

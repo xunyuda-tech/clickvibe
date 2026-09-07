@@ -48,7 +48,7 @@ ClickVibe 是一个 DSH Web 插件和 Issue-to-Merge 交付控制面:右侧面�
 
 **2.2 覆盖率 ≥85%。**
 - 交付标准:全部测试的**语句/行覆盖率 ≥85%**,以 CI 报告为准;不可用"删断言 / 缩测试范围"来凑数值。
-- 测量:node 内置覆盖率(node ≥22 的 `--experimental-test-coverage`,node 23+ 建议 `--test-coverage` 系列),阈值参数(`--test-coverage-statements=85` 等)在门禁 PR 中按实际 node 版本固化进 npm script 与 CI(见 §5);覆盖率不足 = CI 红 = 未完成。
+- 测量:node 内置覆盖率(`--experimental-test-coverage` 系列),测试文件经 devDependency `tsx` 转译执行(Node ≥22 统一,不依赖 Node 内建类型剥离,发行版 Node 构建同样可跑),阈值参数(`--test-coverage-lines=85` 等)固化在 `pnpm run coverage` 脚本与 CI(见 §5);覆盖率不足 = CI 红 = 未完成。
 
 **2.3 不用 mock,用真实业务代码。**
 - 新测试**禁止用 mock 库桩掉被测业务逻辑**;倾向:真实实现 + 真实 git / gh 环境,或**最小 fake**(如实名实现同一接口、可注入真实行为的可编程替身)。
@@ -91,9 +91,10 @@ ClickVibe 是一个 DSH Web 插件和 Issue-to-Merge 交付控制面:右侧面�
 ## 5. 工程流程与门禁
 
 - 本地交付链:`pnpm install && pnpm run typecheck && pnpm run build && pnpm test`,再跑覆盖率(≥85%)、`pnpm run lint`(biome)、`pnpm run check:size`(行数门禁)、`pnpm run check:state-writes`(状态写入边界门禁,见 §2.5);全部全绿才算完成。
-- 覆盖率命令(以仓库实际 node 版本为准,门禁 PR 固化):
-  - node ≥22:`node --experimental-test-coverage --test tests/*.test.ts`(报告);
-  - node 23+/24 LTS 阈值硬门禁:`node --test --test-coverage --test-coverage-statements=85 --test-coverage-branches=85 --test-coverage-functions=85 --test-coverage-lines=85 tests/*.test.ts`。
+- 测试确定性(issue #5、#7):测试文件串行执行(`--test-concurrency=1`,固化在 `test`/`coverage` scripts)——并发度不随机器核数漂移,计数与调度逐机器可复现;测试中 spawn 的对端子进程必须经 `tests/helpers/test-peer.ts` 等待(`awaitResponse` 把等待绑定到对端存活,`stop()` 安全回收),禁止裸 `once(child.stdout, 'data')`/裸 `once(exit)`——对端死亡时它们静默悬空,事件循环排空后被 node:test 记为 `cancelledByParent`(fail=0 的运行间翻转,掩盖真实触发条件)。退出/清理等待一律走 `awaitExit()`/`stop()`(spawn 时绑定的 exit promise):`exitCode === null` 不区分「存活」与「已被信号杀死」——信号死亡的进程退出后 exitCode 仍为 null,以它判定存活再裸等 `once(exit)` 必悬空;死亡拒绝信息必须携带 pid、exit code、signal、stderr。等待其 settle 依赖 unref 生产定时器的 Promise(如 coordinator queue timeout)必须以 `withEventLoopLiveness` 显式声明事件循环存活——unref 定时器不撑事件循环(排队条目不得拖住宿主进程),静默循环下永不触发,裸等必悬空;该生产语义由回归测试锁定,不得以去掉 unref「修复」。
+- 覆盖率命令(门禁 PR 固化;Node ≥22 统一入口,不依赖 Node 内建类型剥离,测试/覆盖率均经 devDependency `tsx` 转译):
+  - 报告:`pnpm run coverage`(`node --import tsx --test --test-concurrency=1 --experimental-test-coverage tests/*.test.ts`);
+  - 阈值硬门禁(同命令,阈值参数固化于 package.json):`--test-coverage-branches=85 --test-coverage-functions=85 --test-coverage-lines=85`。
 - CI(`.github/workflows/ci.yml`)同步执行:typecheck → build → test → coverage(≥85%)→ lint → check:size。
 - 提 issue / 评论遵循 `docs/issue-contract.md` 与仓库 mutation 工作流(刷新 → 预览 → 授权 → 回读验证)。
 - 功能开发必须动作命令化,保持「面板按钮与对话命令共享同一后端动作」。

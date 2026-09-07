@@ -20,7 +20,10 @@ export function baselinePreviewOptions(actualDefault: string, remoteRefs: string
       // Git output is treated as data; malformed entries are excluded from the preview.
     }
   }
-  return ['origin/HEAD', ...[...refs].sort((left, right) => left.localeCompare(right))]
+  // Codepoint order (git's own refname ordering), not localeCompare: the collation
+  // follows the host locale (e.g. zh pinyin orders 发布/二期 before main), which
+  // made the preview order — and its tests — flip from machine to machine.
+  return ['origin/HEAD', ...[...refs].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0))]
 }
 
 /** Recognize a selected ClickVibe issue-development branch for dependency guidance. */
