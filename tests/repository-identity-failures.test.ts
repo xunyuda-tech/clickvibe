@@ -1,6 +1,4 @@
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
-import { once } from 'node:events'
 import { link, mkdtemp, open, readFile, readdir, rm, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -12,6 +10,7 @@ import type {
 } from '../src/infra/repository-identity.ts'
 import { ensureRepositoryId, inspectRepositoryIdentityLocation } from '../src/infra/repository-identity.ts'
 import { repoNodeArgs } from './helpers/repo-node-args.ts'
+import { spawnTestPeer, type TestPeer } from './helpers/test-peer.ts'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 
@@ -104,20 +103,35 @@ try {
 }
 `
 
-async function startRepositoryIdWorker(repository: string, gate: string) {
-  const child = spawn(process.execPath, [...repoNodeArgs, '--input-type=module', '--eval', workerSource], {
+interface RepositoryIdWorker {
+  peer: TestPeer
+  output: AsyncIterableIterator<string>
+}
+
+/**
+ * Next stdout line from a worker, bound to its lifetime. When the stream ends
+ * without a line (worker died — EOF can beat the exit event to the race),
+ * escalate to the spawn-bound exit wait so the failure carries pid, exit
+ * code, signal and stderr instead of a bare `done` assertion (issue #7).
+ */
+async function nextWorkerLine(worker: RepositoryIdWorker, what: string): Promise<IteratorResult<string>> {
+  const line = await worker.peer.awaitResponse(worker.output.next(), what)
+  if (line.done) await worker.peer.awaitExit(what)
+  return line
+}
+
+async function startRepositoryIdWorker(repository: string, gate: string): Promise<RepositoryIdWorker> {
+  const peer = spawnTestPeer(process.execPath, [...repoNodeArgs, '--input-type=module', '--eval', workerSource], {
     cwd: process.cwd(),
     env: { ...process.env, TARGET_REPOSITORY: repository, START_GATE: gate },
   })
-  let stderr = ''
-  child.stderr.setEncoding('utf8')
-  child.stderr.on('data', (chunk) => {
-    stderr += chunk
-  })
-  const output = createInterface({ input: child.stdout })[Symbol.asyncIterator]()
-  const ready = await output.next()
-  assert.equal(ready.value, 'ready', stderr)
-  return { child, output, stderr: () => stderr }
+  const worker: RepositoryIdWorker = {
+    peer,
+    output: createInterface({ input: peer.process.stdout })[Symbol.asyncIterator](),
+  }
+  const ready = await nextWorkerLine(worker, "the 'ready' line on stdout")
+  assert.equal(ready.value, 'ready', peer.stderrText())
+  return worker
 }
 
 test('separate Node processes concurrently publish one complete repositoryId', async () => {
@@ -131,8 +145,8 @@ test('separate Node processes concurrently publish one complete repositoryId', a
     await writeFile(gate, 'go')
     const results = await Promise.all(
       workers.map(async (worker) => {
-        const line = await worker.output.next()
-        assert.equal(line.done, false, worker.stderr())
+        const line = await nextWorkerLine(worker, 'a repositoryId result line')
+        assert.equal(line.done, false, worker.peer.stderrText())
         return JSON.parse(line.value) as { ok: boolean; id?: string; error?: string }
       }),
     )
@@ -144,10 +158,11 @@ test('separate Node processes concurrently publish one complete repositoryId', a
     const location = await inspectRepositoryIdentityLocation(repository)
     assert.equal(await readFile(location.repositoryIdPath, 'utf8'), `${results[0].id}\n`)
   } finally {
-    for (const worker of workers) {
-      if (worker.child.exitCode === null) worker.child.kill()
-      if (worker.child.exitCode === null) await once(worker.child, 'exit')
-    }
+    // A SIGKILLed worker keeps `exitCode === null` after exit, so the old
+    // `exitCode === null` guard + bare `once(exit)` cleanup hung forever
+    // (issue #7); stop() decides on exitCode AND signalCode and rides the
+    // spawn-bound exit promise for every worker in parallel.
+    await Promise.all(workers.map((worker) => worker.peer.stop()))
     await rm(root, { recursive: true, force: true })
   }
 })

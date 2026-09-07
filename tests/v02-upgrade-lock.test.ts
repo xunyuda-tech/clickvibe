@@ -34,12 +34,15 @@ test('a real second Node process cannot acquire the fixed upgrade lock', async (
       'LOCKED on stdout',
     )
     await assert.rejects(acquireV02UpgradeLock(lockPath, 'parent-plan'), /already locked/)
-    const [exitCode] = (await once(child, 'exit')) as [number]
-    assert.equal(exitCode, 0)
+    // The exit wait rides the binding captured at spawn: the child self-exits
+    // 1200ms after LOCKED, so a bare `once(exit)` registered here races an
+    // exit that already happened and would hang forever (issue #7).
+    const exit = await peer.awaitExit('the lock child to release and exit with code 0')
+    assert.equal(exit.code, 0)
     const parent = await acquireV02UpgradeLock(lockPath, 'parent-plan')
     await parent.release()
   } finally {
-    if (child.exitCode === null) child.kill()
+    await peer.stop()
     await rm(root, { recursive: true, force: true })
   }
 })

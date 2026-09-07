@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -102,8 +101,11 @@ test('process enumeration finds a real legacy ClickVibe process and fence waits 
       return true
     })
   } finally {
-    child.kill()
-    if (child.exitCode === null) await once(child, 'exit')
+    // `exitCode === null` cannot detect a signal-killed peer (it stays null
+    // after exit) and a bare `once(exit)` would then hang forever (issue #7);
+    // stop() decides on exitCode AND signalCode and rides the spawn-bound
+    // exit promise.
+    await peer.stop()
     resetV02GenerationFenceForTest()
   }
 })
@@ -123,16 +125,16 @@ test('startup reads never scan or move v0.1 flat files after a v0.2 marker takes
       try { await loadAllWorkflows(); console.log('ALLOWED') }
       catch (error) { console.log('BLOCKED:' + error.message) }
     `
-    const child = spawn(process.execPath, [...repoNodeArgs, '--input-type=module', '-e', script], {
+    const peer = spawnTestPeer(process.execPath, [...repoNodeArgs, '--input-type=module', '-e', script], {
       env: { ...process.env, HOME: home },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let output = ''
-    child.stdout.on('data', (chunk) => {
+    peer.process.stdout.on('data', (chunk) => {
       output += chunk.toString('utf8')
     })
-    const [code] = (await once(child, 'exit')) as [number]
-    assert.equal(code, 0)
+    const exit = await peer.awaitExit('the startup read to finish with code 0')
+    assert.equal(exit.code, 0)
     // The startup migration family is removed entirely (ADR-0013 §6); startup
     // loads succeed without scanning the v0.1 flat layout at all.
     assert.equal(output.trim(), 'ALLOWED')
