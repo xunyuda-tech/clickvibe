@@ -40,17 +40,30 @@ export function tailText(text: string | undefined, limit = TAIL_LIMIT): string {
   return `…${trimmed.slice(-limit)}`
 }
 
-/** Derive a safe command category: program (+ subcommand for git/gh), never arguments. */
+/** Keep a token only if it is identifier-safe; option values (`KEY=secret`), paths and other operand shapes collapse to null. */
+function safeToken(token: string): string | null {
+  const normalized = token.toLowerCase()
+  return /^[a-z0-9][a-z0-9._-]*$/.test(normalized) ? normalized : null
+}
+
+/**
+ * Derive a safe command category: program (+ subcommand for git/gh), never
+ * arguments. Program and subcommand tokens pass the *same* identifier
+ * whitelist at this — the only — construction point, so an option value like
+ * `-c KEY=secret` or a `-C /path` operand can never become part of the
+ * category (issue #1 review F1).
+ */
 export function commandCategory(command: string): string {
   const tokens = command.trim().split(/\s+/).filter(Boolean)
   if (tokens.length === 0) return 'unknown'
-  const program = tokens[0].includes('/') ? tokens[0].slice(tokens[0].lastIndexOf('/') + 1) : tokens[0]
-  const normalized = program.toLowerCase()
-  if (normalized === 'git' || normalized === 'gh') {
-    const sub = tokens.slice(1).find((token) => !token.startsWith('-'))
-    return sub ? `${normalized}-${sub.toLowerCase()}` : normalized
+  const rawProgram = tokens[0].includes('/') ? tokens[0].slice(tokens[0].lastIndexOf('/') + 1) : tokens[0]
+  const program = safeToken(rawProgram)
+  if (!program) return 'unknown'
+  if (program === 'git' || program === 'gh') {
+    const sub = safeToken(tokens.slice(1).find((token) => !token.startsWith('-')) ?? '')
+    return sub ? `${program}-${sub}` : program
   }
-  return /^[a-z0-9][a-z0-9._-]*$/.test(normalized) ? normalized : 'unknown'
+  return program
 }
 
 /**

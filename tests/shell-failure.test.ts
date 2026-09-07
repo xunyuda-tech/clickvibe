@@ -36,6 +36,17 @@ test('command categories derive from the program and first subcommand only', () 
   assert.equal(commandCategory(''), 'unknown')
 })
 
+test('pre-subcommand option values and operands collapse to the bare program (review F1)', () => {
+  // `-c KEY=value` injects the value as the first non-flag token; the value may
+  // carry a secret, so it must never become the category. `-C <path>` likewise
+  // injects a filesystem path. Both fall back to the bare program name.
+  const header = commandCategory('git -c http.extraheader=SECRET_TOKEN_ABC123 push origin main')
+  assert.equal(header, 'git')
+  assert.equal(header.includes('secret_token_abc123'), false)
+  assert.equal(commandCategory('git -C /home/me/secret-project status'), 'git')
+  assert.equal(commandCategory('gh repo set-default o/r --skip-confirmation'), 'gh-repo')
+})
+
 test('output tails keep the end of the stream and are capped', () => {
   assert.equal(tailText('short', 400), 'short')
   const long = `a`.repeat(600)
@@ -187,6 +198,35 @@ test('runCommand classifies a host-cancelled command as an abort with the marker
   assert.equal(record.kind, 'abort')
   assert.equal(record.cancelled, true)
   assert.equal(record.hostStatus, 'cancelled')
+})
+
+test('a null exit with secrets in option values leaks neither into diagnostics nor the error message', async () => {
+  // Review F1 repro shape: the secret sits BEFORE the subcommand, where the
+  // category token is selected. The diagnostic record and the thrown message
+  // must carry the bare category and no trace of the token or path.
+  const secret = 'SECRET_TOKEN_ABC123'
+  const hiddenPath = '/home/me/secret-project'
+  const { records } = await withCapturedDiagnostics(async () => {
+    const shell = shellReturning({ exitCode: null, stdout: { text: '' }, stderr: { text: '' } })
+    await assert.rejects(
+      runCommand({ shell } as never, `git -c http.extraheader=${secret} -C ${hiddenPath} push`, {
+        timeoutMs: 30_000,
+      }),
+      (error: Error) => {
+        assert.equal(error.message.includes(secret), false)
+        assert.equal(error.message.includes(hiddenPath), false)
+        assert.match(error.message, /\[git\]/)
+        return true
+      },
+    )
+  })
+  const record = records.find((entry) => (entry as { event?: string }).event === 'shell-null-exit') as Record<
+    string,
+    unknown
+  >
+  assert.equal(record.category, 'git')
+  assert.equal(JSON.stringify(record).includes(secret), false)
+  assert.equal(JSON.stringify(record).includes('secret-project'), false)
 })
 
 test('non-zero numeric exits keep the existing error shape without null-exit diagnostics', async () => {
