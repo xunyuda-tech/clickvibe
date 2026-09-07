@@ -91,7 +91,7 @@ ClickVibe 是一个 DSH Web 插件和 Issue-to-Merge 交付控制面:右侧面�
 ## 5. 工程流程与门禁
 
 - 本地交付链:`pnpm install && pnpm run typecheck && pnpm run build && pnpm test`,再跑覆盖率(≥85%)、`pnpm run lint`(biome)、`pnpm run check:size`(行数门禁)、`pnpm run check:state-writes`(状态写入边界门禁,见 §2.5);全部全绿才算完成。
-- 测试确定性(issue #5):测试文件串行执行(`--test-concurrency=1`,固化在 `test`/`coverage` scripts)——并发度不随机器核数漂移,计数与调度逐机器可复现;测试中 spawn 的对端子进程必须经 `tests/helpers/test-peer.ts` 等待(`awaitResponse` 把等待绑定到对端存活,`stop()` 安全回收),禁止裸 `once(child.stdout, 'data')`/裸 `once(exit)`——对端死亡时它们静默悬空,事件循环排空后被 node:test 记为 `cancelledByParent`(fail=0 的运行间翻转,掩盖真实触发条件)。
+- 测试确定性(issue #5、#7):测试文件串行执行(`--test-concurrency=1`,固化在 `test`/`coverage` scripts)——并发度不随机器核数漂移,计数与调度逐机器可复现;测试中 spawn 的对端子进程必须经 `tests/helpers/test-peer.ts` 等待(`awaitResponse` 把等待绑定到对端存活,`stop()` 安全回收),禁止裸 `once(child.stdout, 'data')`/裸 `once(exit)`——对端死亡时它们静默悬空,事件循环排空后被 node:test 记为 `cancelledByParent`(fail=0 的运行间翻转,掩盖真实触发条件)。退出/清理等待一律走 `awaitExit()`/`stop()`(spawn 时绑定的 exit promise):`exitCode === null` 不区分「存活」与「已被信号杀死」——信号死亡的进程退出后 exitCode 仍为 null,以它判定存活再裸等 `once(exit)` 必悬空;死亡拒绝信息必须携带 pid、exit code、signal、stderr。等待其 settle 依赖 unref 生产定时器的 Promise(如 coordinator queue timeout)必须以 `withEventLoopLiveness` 显式声明事件循环存活——unref 定时器不撑事件循环(排队条目不得拖住宿主进程),静默循环下永不触发,裸等必悬空;该生产语义由回归测试锁定,不得以去掉 unref「修复」。
 - 覆盖率命令(门禁 PR 固化;Node ≥22 统一入口,不依赖 Node 内建类型剥离,测试/覆盖率均经 devDependency `tsx` 转译):
   - 报告:`pnpm run coverage`(`node --import tsx --test --test-concurrency=1 --experimental-test-coverage tests/*.test.ts`);
   - 阈值硬门禁(同命令,阈值参数固化于 package.json):`--test-coverage-branches=85 --test-coverage-functions=85 --test-coverage-lines=85`。

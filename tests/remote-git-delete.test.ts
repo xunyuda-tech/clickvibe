@@ -10,6 +10,8 @@ import {
   deriveRemoteGitMetrics,
   type RemoteGitWriteAttempt,
 } from '../src/infra/remote-git-coordinator.ts'
+import { repoNodeArgs } from './helpers/repo-node-args.ts'
+import { spawnTestPeer, withEventLoopLiveness } from './helpers/test-peer.ts'
 
 const execFileAsync = promisify(execFile)
 
@@ -418,7 +420,10 @@ test('delete boundary failures remain zero-write or conservatively unknown', asy
     })
     try {
       await entered.promise
-      const outcome = await coordinator.deleteRemoteBranchIfPresent(baseInput())
+      // The queue-timeout timer is unref'd in production (a queued entry must
+      // not hold the host process open), so in a quiet loop the outcome below
+      // would never settle (issue #7). The wait declares its own liveness.
+      const outcome = await withEventLoopLiveness(coordinator.deleteRemoteBranchIfPresent(baseInput()))
       assert.equal(outcome.outcome, 'unknown')
       assert.match(outcome.error ?? '', /排队超过/)
     } finally {
@@ -426,5 +431,48 @@ test('delete boundary failures remain zero-write or conservatively unknown', asy
       await blocker
       await coordinator.close()
     }
+  })
+
+  await t.test('queue-timeout timers stay unref’d: a quiet loop exits instead of settling', async () => {
+    // Production semantics pinned by issue #7: pending queue entries never
+    // hold the process open. A child awaiting a queue-timeout promise in an
+    // otherwise quiet event loop must exit without settling (Node exit 13,
+    // "unsettled top-level await") — the exact ambient dependency the test
+    // above compensates for with withEventLoopLiveness. Ref'ing the timer in
+    // src would print SETTLED and exit 0 here, failing loudly.
+    const moduleUrl = new URL('../src/infra/remote-git-coordinator.ts', import.meta.url).href
+    const script = `
+      import { createRemoteGitCoordinator } from ${JSON.stringify(moduleUrl)};
+      const coordinator = createRemoteGitCoordinator({ queueTimeoutMs: 5_000 });
+      const blocker = coordinator.fetch({
+        scope: { repoKey: 'o/ambient-liveness', remote: 'origin' },
+        prune: true,
+        execute: () => new Promise(() => {}),
+        invalidate: () => undefined,
+        readback: async () => '',
+      });
+      const outcome = await coordinator.deleteRemoteBranchIfPresent({
+        scope: { repoKey: 'o/ambient-liveness', remote: 'origin' },
+        validate: async () => ({ destinationRef: 'refs/heads/gone', expectedRemoteOid: 'd'.repeat(40) }),
+        preRead: async () => null,
+        persistAttempt: async () => undefined,
+        execute: async () => '',
+        invalidate: () => undefined,
+        readback: async () => null,
+        settleAttempt: async () => undefined,
+      });
+      console.log('SETTLED ' + outcome.outcome);
+    `
+    const peer = spawnTestPeer(process.execPath, [...repoNodeArgs, '--input-type=module', '-e', script], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let output = ''
+    peer.process.stdout.setEncoding('utf8')
+    peer.process.stdout.on('data', (chunk: string) => {
+      output += chunk
+    })
+    const exit = await peer.awaitExit('exit without settling the queue-timeout promise')
+    assert.equal(exit.code, 13)
+    assert.doesNotMatch(output, /SETTLED/)
   })
 })
