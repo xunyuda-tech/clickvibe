@@ -91,8 +91,9 @@ ClickVibe 是一个 DSH Web 插件和 Issue-to-Merge 交付控制面:右侧面�
 ## 5. 工程流程与门禁
 
 - 本地交付链:`pnpm install && pnpm run typecheck && pnpm run build && pnpm test`,再跑覆盖率(≥85%)、`pnpm run lint`(biome)、`pnpm run check:size`(行数门禁)、`pnpm run check:state-writes`(状态写入边界门禁,见 §2.5);全部全绿才算完成。
+- 测试确定性(issue #5):测试文件串行执行(`--test-concurrency=1`,固化在 `test`/`coverage` scripts)——并发度不随机器核数漂移,计数与调度逐机器可复现;测试中 spawn 的对端子进程必须经 `tests/helpers/test-peer.ts` 等待(`awaitResponse` 把等待绑定到对端存活,`stop()` 安全回收),禁止裸 `once(child.stdout, 'data')`/裸 `once(exit)`——对端死亡时它们静默悬空,事件循环排空后被 node:test 记为 `cancelledByParent`(fail=0 的运行间翻转,掩盖真实触发条件)。
 - 覆盖率命令(门禁 PR 固化;Node ≥22 统一入口,不依赖 Node 内建类型剥离,测试/覆盖率均经 devDependency `tsx` 转译):
-  - 报告:`pnpm run coverage`(`node --import tsx --test --experimental-test-coverage tests/*.test.ts`);
+  - 报告:`pnpm run coverage`(`node --import tsx --test --test-concurrency=1 --experimental-test-coverage tests/*.test.ts`);
   - 阈值硬门禁(同命令,阈值参数固化于 package.json):`--test-coverage-branches=85 --test-coverage-functions=85 --test-coverage-lines=85`。
 - CI(`.github/workflows/ci.yml`)同步执行:typecheck → build → test → coverage(≥85%)→ lint → check:size。
 - 提 issue / 评论遵循 `docs/issue-contract.md` 与仓库 mutation 工作流(刷新 → 预览 → 授权 → 回读验证)。
