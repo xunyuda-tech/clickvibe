@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { acquireV02UpgradeLock } from '../src/infra/v02-upgrade-lock.ts'
+import { repoNodeArgs } from './helpers/repo-node-args.ts'
 
 test('a real second Node process cannot acquire the fixed upgrade lock', async () => {
   const root = await mkdtemp(join(tmpdir(), 'clickvibe-v02-lock-'))
@@ -17,7 +18,9 @@ test('a real second Node process cannot acquire the fixed upgrade lock', async (
     console.log('LOCKED');
     setTimeout(async () => { await lock.release(); process.exit(0) }, 1200);
   `
-  const child = spawn(process.execPath, ['--input-type=module', '-e', script], { stdio: ['ignore', 'pipe', 'pipe'] })
+  const child = spawn(process.execPath, [...repoNodeArgs, '--input-type=module', '-e', script], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
   try {
     let output = ''
     while (!output.includes('LOCKED')) {

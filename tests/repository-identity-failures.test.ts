@@ -11,6 +11,7 @@ import type {
   RepositoryIdentityWriteHandle,
 } from '../src/infra/repository-identity.ts'
 import { ensureRepositoryId, inspectRepositoryIdentityLocation } from '../src/infra/repository-identity.ts'
+import { repoNodeArgs } from './helpers/repo-node-args.ts'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 
@@ -104,7 +105,7 @@ try {
 `
 
 async function startRepositoryIdWorker(repository: string, gate: string) {
-  const child = spawn(process.execPath, ['--input-type=module', '--eval', workerSource], {
+  const child = spawn(process.execPath, [...repoNodeArgs, '--input-type=module', '--eval', workerSource], {
     cwd: process.cwd(),
     env: { ...process.env, TARGET_REPOSITORY: repository, START_GATE: gate },
   })
