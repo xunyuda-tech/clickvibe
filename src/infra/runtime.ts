@@ -43,6 +43,8 @@ import {
 } from './develop-core.ts'
 import { LineBuffer } from './line-buffer.ts'
 import { type RepositoryFreshness, RepositoryRefreshClock } from './repo-freshness.ts'
+import { classifyNullExit, nullExitFacts, nullExitMessage } from './shell-failure.ts'
+import { logTaskDiagnostic } from './task-diagnostics.ts'
 import type { IssueWorkflow, WorkflowTaskLease } from './state.ts'
 import { ExclusiveTaskGate } from './task-gate.ts'
 
@@ -307,14 +309,17 @@ export async function runCommand(
     sandboxPolicy?: { mode: 'read-only' | 'workspace-write' | 'danger-full-access'; workspaceRoot: string }
   } = {},
 ): Promise<string> {
+  const timeoutMs = options.timeoutMs ?? 30000
+  const startedAt = Date.now()
   const spec = ctx.shell.resolve({
     command,
     workdir: options.workdir,
     stdin: options.stdin,
-    timeoutMs: options.timeoutMs ?? 30000,
+    timeoutMs,
     sandboxPolicy: options.sandboxPolicy,
   })
   const result = await ctx.shell.run(spec)
+  const endedAt = Date.now()
   // stdout 超限时内存只保留尾部;有 spill 文件则读全文,否则明确报错而不是返回垃圾。
   // 注:插件可见的 shell 类型只声明 {text},运行时才有 truncated/spillPath,做宽断言。
   const out = result.stdout as { text: string; truncated?: boolean; spillPath?: string }
@@ -322,6 +327,27 @@ export async function runCommand(
     // merge 等 Git 命令把 CONFLICT/文件提示打到 stdout,只拼 stderr 会丢冲突详情
     const stderr = result.stderr?.text?.trim() ?? ''
     const stdout = out.text.trim()
+    if (result.exitCode === null) {
+      // 空退出码必须留下可诊断证据(issue #1):分类 + 计时 + 超时配置 + signal +
+      // 输出尾部落 diagnostics,错误文案携带可读原因。只记类别,不记命令行与 secret。
+      const evidence = nullExitFacts({ command, timeoutMs, startedAt, endedAt, result, stdout, stderr })
+      const verdict = classifyNullExit(evidence)
+      logTaskDiagnostic('shell-null-exit', {
+        category: evidence.category,
+        kind: verdict.kind,
+        reason: verdict.reason,
+        startedAt: new Date(startedAt).toISOString(),
+        endedAt: new Date(endedAt).toISOString(),
+        durationMs: evidence.durationMs,
+        timeoutMs: evidence.timeoutMs,
+        signal: evidence.signal,
+        cancelled: evidence.cancelled,
+        hostStatus: evidence.hostStatus,
+        stdoutTail: evidence.stdoutTail,
+        stderrTail: evidence.stderrTail,
+      })
+      throw new Error(nullExitMessage(evidence, verdict))
+    }
     const detail = [stderr, stdout].filter(Boolean).join('\n')
     throw new Error(`命令退出码 ${result.exitCode}${detail ? `: ${detail}` : ''}`)
   }

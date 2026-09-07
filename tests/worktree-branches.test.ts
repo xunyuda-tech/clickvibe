@@ -202,7 +202,7 @@ test('new worktree creation is rooted at the sampled immutable baseline commit',
   assert.ok(created.commands.includes("git worktree add -b 'repo-issue-61' '" + created.target + "' 'abc1234'"))
 })
 
-test('repair rollback deletes the branch it created when baseline persistence fails', async () => {
+test('baseline persistence failure keeps the created worktree and branch for git-fact recovery', async () => {
   const failed = await runScenario('15', {
     path: 'empty',
     branchExists: false,
@@ -210,8 +210,19 @@ test('repair rollback deletes the branch it created when baseline persistence fa
     records: (target, branch) => `worktree ${target}\nHEAD stale111\nbranch refs/heads/${branch}\n\n`,
   })
   assert.equal(failed.result.ok, false)
+  if (!failed.result.ok) assert.match(failed.result.error, /无法定格开发基线/)
+  if (!failed.result.ok) assert.match(failed.result.error, /按 Git 事实复用/)
   assert.ok(failed.commands.some((command) => command.startsWith('git worktree add -b')))
-  assert.ok(failed.commands.some((command) => command.startsWith('git branch -D')))
+  assert.equal(
+    failed.commands.filter((command) => command.startsWith('git worktree remove --force')).length,
+    1,
+    'only the pre-rebuild stale-registration cleanup may remove; the persistence failure must not tear the rebuilt worktree back down',
+  )
+  assert.equal(
+    failed.commands.some((command) => command.startsWith('git branch -D')),
+    false,
+    'persistence failure must not delete the branch',
+  )
 })
 
 test('worktree preparation executes reuse, detached attach and existing-branch attach recoveries', async () => {
