@@ -80,6 +80,9 @@ fetchTtlSeconds: 45  # 查看状态时自动 fetch 的 TTL，可配置为 30–6
 
 ```sh
 # 3. (开发者)构建与测试
+#    运行时要求 Node >= 24(package.json engines 同步锁定):pnpm test 用 node --test
+#    直接执行 .ts,依赖原生 type stripping;Node 22 及更早会报
+#    ERR_UNKNOWN_FILE_EXTENSION,全部测试无法加载。CI 固定 node-version 24。
 pnpm install && pnpm run build
 pnpm test
 ```

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { GithubRateLimitError } from '../src/github/rest.ts'
+import { runCommand } from '../src/infra/runtime.ts'
 import { type IssueWorkflow, issueKey, loadWorkflow, workflowRevision } from '../src/infra/state.ts'
 import { AUTO_RUN_WATCHDOG_NOTE } from '../src/workflow/auto-run-recovery-policy.ts'
 import {
@@ -48,7 +49,7 @@ test.before(async () => {
 })
 
 test.after(async () => {
-  for (const number of ['1201', '1202', '1203', '1204', '1205', '1206', '1207', '1208', '1209', '122']) {
+  for (const number of ['1201', '1202', '1203', '1204', '1205', '1206', '1207', '1208', '1209', '1210', '122']) {
     clearAutoRunTimers(issueKey('owner/repo', number))
   }
   if (previousHome === undefined) delete process.env.HOME
@@ -92,6 +93,46 @@ test('one infrastructure failure stays running and records an unlimited retry ch
   assert.equal(retry?.consecutive, 1)
   assert.equal(typeof retry?.fingerprint, 'string')
   assert.equal(typeof retry?.retryAt, 'string')
+})
+
+test('a transient host-shell null exit retries with its classified cause on the checkpoint', async () => {
+  // The exact error a null-exit foreground command produces today (issue #1):
+  // build it through runCommand so the recorded evidence is the real shape.
+  const nullExitShell = {
+    resolve: (spec: unknown) => spec,
+    run: async () => ({ exitCode: null, stdout: { text: '' }, stderr: { text: '' } }),
+  }
+  const error = await runCommand({ shell: nullExitShell } as never, 'git worktree list --porcelain', {
+    timeoutMs: 15_000,
+  }).then(
+    () => assert.fail('runCommand must reject on a null exit'),
+    (reason: Error) => reason,
+  )
+  assert.match(error.message, /命令退出码 null/)
+  assert.match(error.message, /host-shell/)
+
+  const current = workflow(tempHome, '1210')
+  await commitWorkflowFixture(current, current.revision ?? null)
+  await handleAutoRunControllerFailure(idleContext as never, current.key, error, 'action:develop', noWake)
+
+  const observed = await pollWorkflow(current.key, (value) => (value.autoRun?.controllerRecovery?.attempt ?? 0) >= 1)
+  assert.equal(observed.autoRun?.status, 'running', 'a transient host-shell failure must retry, not pause')
+  const records = await diagnosticRecords(tempHome, '1210')
+  const retry = records.find((record) => record.event === 'auto-run-controller-retry')
+  assert.match(String(retry?.errorMessage), /host-shell/)
+  assert.equal(retry?.attempt, 1)
+  // runCommand has no workflow attribution: the null-exit evidence lands in the
+  // controller-global diagnostics stream.
+  const globalRaw = await readFile(join(tempHome, '.clickvibe', 'state', 'diagnostics.jsonl'), 'utf8').catch(() => '')
+  const nullExit = globalRaw
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .find((record) => record.event === 'shell-null-exit')
+  assert.equal(nullExit?.category, 'git-worktree')
+  assert.equal(nullExit?.kind, 'host-shell')
+  assert.equal(nullExit?.timeoutMs, 15_000)
 })
 
 test('the reconcile queue fuses three identical stacks and coalesces watchdog signals', async () => {

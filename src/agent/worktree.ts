@@ -34,9 +34,17 @@ import {
   WorkflowConflictError,
   workflowRevision,
 } from '../infra/state.ts'
+import { withWorkflowLock } from '../infra/workflow-lock.ts'
 import { resolveSelectedRemoteBase } from './baseline.ts'
 
-/** Create (or reuse) the workflow record and the worktree+branch. */
+/**
+ * Create (or reuse) the workflow record and the worktree+branch.
+ *
+ * Invariant I3 (issue #1): preparation for one workflow is serialized by a
+ * lock built into this function — every caller (develop-start, startAutoRun)
+ * gets mutual exclusion by construction. Different workflows never share the
+ * lock and errors stay attributed to their own workflow key.
+ */
 export async function ensureWorktree(
   ctx: Context,
   parsed: { owner: string; repo: string; number: string },
@@ -59,8 +67,25 @@ export async function ensureWorktree(
   if (!existsSync(expandedRepo)) {
     return { ok: false, error: `仓库路径不存在: ${expandedRepo}` }
   }
-
   const key = issueKey(repoKey, parsed.number)
+  return withWorkflowLock(key, () =>
+    prepareWorktree(ctx, { config, repoKey, expandedRepo, key, number: parsed.number, requestedBaseline }),
+  )
+}
+
+async function prepareWorktree(
+  ctx: Context,
+  input: {
+    config: Awaited<ReturnType<typeof loadConfig>>
+    repoKey: string
+    expandedRepo: string
+    key: string
+    number: string
+    requestedBaseline?: unknown
+  },
+): Promise<{ ok: true; workflow: IssueWorkflow; worktree: string; branch: string } | { ok: false; error: string }> {
+  const { config, repoKey, expandedRepo, key, requestedBaseline } = input
+  const parsed = { number: input.number }
   let workflow = await loadWorkflow(key)
   const project = basename(expandedRepo)
   const branch = `${project}-issue-${parsed.number}`
@@ -198,14 +223,6 @@ export async function ensureWorktree(
     branchExists,
     branchWorktree: atBranch?.path ?? null,
   })
-  const detachedHead =
-    recovery.kind === 'attach-detached' || recovery.kind === 'attach-existing'
-      ? await runCommand(ctx, 'git rev-parse HEAD', {
-          workdir: normalizedTarget,
-          timeoutMs: 10_000,
-          sandboxPolicy: policy,
-        })
-      : null
 
   if (recovery.kind === 'conflict') {
     await appendLog(workflow.key, 'dev', `[clickvibe] worktree 冲突: ${recovery.reason}`)
@@ -303,10 +320,10 @@ export async function ensureWorktree(
     )
   }
 
-  // startDevelop holds the workflow lock across worktree preparation and task
-  // reservation. Freeze the baseline only after preparation succeeds. The
-  // revision-bound metadata commit is the sole persistence point, so another
-  // controller cannot silently replace the selected base or lifecycle facts.
+  // The lock is held inside ensureWorktree for the whole preparation. Freeze
+  // the baseline only after preparation succeeds. The revision-bound metadata
+  // commit is the sole persistence point, so another controller cannot
+  // silently replace the selected base or lifecycle facts.
   if (firstBaseSelection) workflow.baseRef = `${remoteBase} @ ${remoteBaseHash}`
   try {
     Object.assign(
@@ -319,30 +336,23 @@ export async function ensureWorktree(
     )
   } catch (error) {
     if (firstBaseSelection) {
-      const rollbackErrors: string[] = []
-      const rollback = async (command: string, workdir: string) => {
-        try {
-          await runCommand(ctx, command, { workdir, timeoutMs: 60_000, sandboxPolicy: policy })
-        } catch (rollbackError) {
-          rollbackErrors.push(String(rollbackError instanceof Error ? rollbackError.message : rollbackError))
-        }
-      }
-      const createdBranch =
-        recovery.kind === 'add-new-branch' ||
-        recovery.kind === 'attach-detached' ||
-        (recovery.kind === 'repair' && !branchExists)
-      if (recovery.kind === 'add-new-branch') {
-        await rollback(`git worktree remove --force ${shellQuote(normalizedTarget)}`, expandedRepo)
-      } else if (recovery.kind === 'add-existing-branch' || recovery.kind === 'repair') {
-        await rollback(`git worktree remove --force ${shellQuote(normalizedTarget)}`, expandedRepo)
-      } else if (recovery.kind === 'attach-detached' || recovery.kind === 'attach-existing') {
-        if (detachedHead) await rollback(`git switch --detach ${shellQuote(detachedHead)}`, normalizedTarget)
-      }
-      if (createdBranch) await rollback(`git branch -D ${shellQuote(branch)}`, expandedRepo)
-      notifyLocalGitMutation({ repoKey, worktreePath: worktree }, 'worktree-rollback', 'ensureWorktree')
+      // Invariant I2 (issue #1): git-side facts (worktree, branch) already
+      // hold once the commands above succeeded — a persistence interruption
+      // must not destroy them. Recovery is idempotent on the next run: git
+      // facts route through reuse/attach and the merge-base containment check
+      // re-validates provenance before the base is frozen. Tearing the
+      // worktree down here only created create↔delete flapping while the
+      // state directory stayed broken.
       const detail = String(error instanceof Error ? error.message : error)
-      const rollbackDetail = rollbackErrors.length > 0 ? `; worktree 回滚失败: ${rollbackErrors.join('; ')}` : ''
-      return { ok: false, error: `无法定格开发基线: ${detail}${rollbackDetail}` }
+      await appendLog(
+        workflow.key,
+        'dev',
+        `[clickvibe] 基线定格失败,worktree 与分支按 Git 事实保留,下次准备幂等复用: ${detail}`,
+      )
+      return {
+        ok: false,
+        error: `无法定格开发基线(已保留 worktree 与分支,下次准备将按 Git 事实复用): ${detail}`,
+      }
     }
     return {
       ok: false,

@@ -8,6 +8,7 @@ import test from 'node:test'
 import { activateV02Home, initFixtureRepository } from './helpers/v02-home.ts'
 import { buildWorktreeAddCommand } from '../src/agent/develop.ts'
 import { ensureWorktree } from '../src/agent/worktree.ts'
+import { issueKey, loadWorkflow } from '../src/infra/state.ts'
 
 const execAsync = promisify(exec)
 const execFileAsync = promisify(execFile)
@@ -137,8 +138,8 @@ test('first development creates from a selected remote branch and freezes it', a
   }
 })
 
-test('a baseline persistence failure rolls back a newly created worktree and branch', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'clickvibe-baseline-rollback-'))
+test('a baseline persistence failure keeps git facts and the retry recovers them idempotently', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'clickvibe-baseline-recovery-'))
   const home = join(root, 'home')
   const remote = join(root, 'remote.git')
   const repo = join(root, 'repo')
@@ -147,6 +148,18 @@ test('a baseline persistence failure rolls back a newly created worktree and bra
   const previousHome = process.env.HOME
   process.env.HOME = home
   const git = (...args: string[]) => execFileAsync('git', ['-C', repo, ...args])
+  const commands: string[] = []
+  const recordingShell = {
+    shell: {
+      resolve(spec: unknown) {
+        return spec
+      },
+      async run(spec: { command: string; workdir?: string }) {
+        commands.push(spec.command)
+        return await realShellCtx().shell.run(spec)
+      },
+    },
+  }
   try {
     await mkdir(join(home, '.clickvibe'), { recursive: true })
     await execFileAsync('git', ['init', '--bare', remote])
@@ -160,11 +173,32 @@ test('a baseline persistence failure rolls back a newly created worktree and bra
     await activateV02Home(home, { 'o/r': repo }, { worktreeRoot: worktreeRoot })
     await chmod(join(home, '.clickvibe', 'state'), 0o500)
 
-    const result = await ensureWorktree(realShellCtx() as never, { owner: 'o', repo: 'r', number: '63' })
+    const result = await ensureWorktree(recordingShell as never, { owner: 'o', repo: 'r', number: '63' })
     assert.equal(result.ok, false)
     if (!result.ok) assert.match(result.error, /无法定格开发基线/)
-    await assert.rejects(execFileAsync('git', ['-C', target, 'rev-parse', 'HEAD']))
-    await assert.rejects(git('show-ref', '--verify', 'refs/heads/repo-issue-63'))
+    if (!result.ok) assert.match(result.error, /按 Git 事实复用/)
+    // Git-side facts survive the persistence interruption untouched.
+    const keptHead = (await execFileAsync('git', ['-C', target, 'rev-parse', 'HEAD'])).stdout.trim()
+    await git('show-ref', '--verify', 'refs/heads/repo-issue-63')
+    const addsBeforeRetry = commands.filter((command) => command.startsWith('git worktree add')).length
+    assert.equal(addsBeforeRetry, 1, 'the first attempt did create the worktree')
+
+    // Once persistence works again the retry must reuse the git facts, not recreate.
+    await chmod(join(home, '.clickvibe', 'state'), 0o700)
+    const recovered = await ensureWorktree(recordingShell as never, { owner: 'o', repo: 'r', number: '63' })
+    assert.equal(recovered.ok, true)
+    assert.equal(
+      commands.filter((command) => command.startsWith('git worktree add')).length,
+      1,
+      'the retry reuses the existing worktree instead of re-adding it',
+    )
+    assert.equal(
+      (await execFileAsync('git', ['-C', target, 'rev-parse', 'HEAD'])).stdout.trim(),
+      keptHead,
+      'the kept worktree is not modified by recovery',
+    )
+    const stored = await loadWorkflow(issueKey('o/r', '63'))
+    assert.match(stored?.baseRef ?? '', /^origin\/main @ /)
   } finally {
     if (previousHome === undefined) delete process.env.HOME
     else process.env.HOME = previousHome
