@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import test from 'node:test'
+import { repoNodeArgs } from './helpers/repo-node-args.ts'
 import { commitWorkflowFixture } from './workflow-fixture.ts'
 import { finishTask, waitForTaskPersistence } from '../src/agent/task-supervisor.ts'
 import { LineLog } from '../src/infra/develop-core.ts'
@@ -90,7 +91,7 @@ for await (const line of createInterface({ input: process.stdin })) {
 `
 
 async function startWorker(home: string) {
-  const child = spawn(process.execPath, ['--input-type=module', '--eval', workerSource], {
+  const child = spawn(process.execPath, [...repoNodeArgs, '--input-type=module', '--eval', workerSource], {
     cwd: process.cwd(),
     env: { ...process.env, HOME: home },
   })

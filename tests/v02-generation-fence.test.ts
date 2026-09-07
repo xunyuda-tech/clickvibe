@@ -14,6 +14,7 @@ import {
   resetV02GenerationFenceForTest,
   V02_OFFLINE_HOST_DECLARATION,
 } from '../src/infra/v02-generation-fence.ts'
+import { repoNodeArgs } from './helpers/repo-node-args.ts'
 
 test('online upgrade stays disabled until the host registers a real generation capability', async () => {
   resetV02GenerationFenceForTest()
@@ -120,7 +121,7 @@ test('startup reads never scan or move v0.1 flat files after a v0.2 marker takes
       try { await loadAllWorkflows(); console.log('ALLOWED') }
       catch (error) { console.log('BLOCKED:' + error.message) }
     `
-    const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
+    const child = spawn(process.execPath, [...repoNodeArgs, '--input-type=module', '-e', script], {
       env: { ...process.env, HOME: home },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
