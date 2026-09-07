@@ -84,7 +84,7 @@ pnpm install && pnpm run build
 pnpm test
 ```
 
-开发环境要求:Node ≥22(已验证 22.22.1 与 24 LTS;不要求 Node 内建 TypeScript 类型剥离——发行版构建的 Node 同样可跑)、pnpm(版本由 `packageManager` 字段锁定为 11.21.0)。测试经 devDependency `tsx`(esbuild)在进程内转译 TypeScript 后交给 `node --test` 执行,`pnpm test` / `pnpm run coverage` 无需任何全局工具。
+开发环境要求:Node ≥22(已验证 22.22.1 与 24 LTS;不要求 Node 内建 TypeScript 类型剥离——发行版构建的 Node 同样可跑)、pnpm(版本由 `packageManager` 字段锁定为 11.21.0)。测试经 devDependency `tsx`(esbuild)在进程内转译 TypeScript 后交给 `node --test` 执行,`pnpm test` / `pnpm run coverage` 无需任何全局工具。测试文件固定串行执行(`--test-concurrency=1`,固化在 npm scripts):并发度不再随机器核数变化,跨文件时序干扰与峰值内存占用固定,计数逐机器可复现(issue #5)。
 
 重启 `dsh web` 后,在侧栏底部点 **ClickVibe** 打开面板,选项目,点「开始开发」即可。client 端改动硬刷新浏览器(⌘⇧R)即可生效。
 
