@@ -84,6 +84,8 @@ pnpm install && pnpm run build
 pnpm test
 ```
 
+开发环境要求:Node ≥22(已验证 22.22.1 与 24 LTS;不要求 Node 内建 TypeScript 类型剥离——发行版构建的 Node 同样可跑)、pnpm(版本由 `packageManager` 字段锁定为 11.21.0)。测试经 devDependency `tsx`(esbuild)在进程内转译 TypeScript 后交给 `node --test` 执行,`pnpm test` / `pnpm run coverage` 无需任何全局工具。
+
 重启 `dsh web` 后,在侧栏底部点 **ClickVibe** 打开面板,选项目,点「开始开发」即可。client 端改动硬刷新浏览器(⌘⇧R)即可生效。
 
 ## 对话触发:动作命令化

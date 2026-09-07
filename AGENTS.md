@@ -48,7 +48,7 @@ ClickVibe 是一个 DSH Web 插件和 Issue-to-Merge 交付控制面:右侧面�
 
 **2.2 覆盖率 ≥85%。**
 - 交付标准:全部测试的**语句/行覆盖率 ≥85%**,以 CI 报告为准;不可用"删断言 / 缩测试范围"来凑数值。
-- 测量:node 内置覆盖率(node ≥22 的 `--experimental-test-coverage`,node 23+ 建议 `--test-coverage` 系列),阈值参数(`--test-coverage-statements=85` 等)在门禁 PR 中按实际 node 版本固化进 npm script 与 CI(见 §5);覆盖率不足 = CI 红 = 未完成。
+- 测量:node 内置覆盖率(`--experimental-test-coverage` 系列),测试文件经 devDependency `tsx` 转译执行(Node ≥22 统一,不依赖 Node 内建类型剥离,发行版 Node 构建同样可跑),阈值参数(`--test-coverage-lines=85` 等)固化在 `pnpm run coverage` 脚本与 CI(见 §5);覆盖率不足 = CI 红 = 未完成。
 
 **2.3 不用 mock,用真实业务代码。**
 - 新测试**禁止用 mock 库桩掉被测业务逻辑**;倾向:真实实现 + 真实 git / gh 环境,或**最小 fake**(如实名实现同一接口、可注入真实行为的可编程替身)。
@@ -91,9 +91,9 @@ ClickVibe 是一个 DSH Web 插件和 Issue-to-Merge 交付控制面:右侧面�
 ## 5. 工程流程与门禁
 
 - 本地交付链:`pnpm install && pnpm run typecheck && pnpm run build && pnpm test`,再跑覆盖率(≥85%)、`pnpm run lint`(biome)、`pnpm run check:size`(行数门禁)、`pnpm run check:state-writes`(状态写入边界门禁,见 §2.5);全部全绿才算完成。
-- 覆盖率命令(以仓库实际 node 版本为准,门禁 PR 固化):
-  - node ≥22:`node --experimental-test-coverage --test tests/*.test.ts`(报告);
-  - node 23+/24 LTS 阈值硬门禁:`node --test --test-coverage --test-coverage-statements=85 --test-coverage-branches=85 --test-coverage-functions=85 --test-coverage-lines=85 tests/*.test.ts`。
+- 覆盖率命令(门禁 PR 固化;Node ≥22 统一入口,不依赖 Node 内建类型剥离,测试/覆盖率均经 devDependency `tsx` 转译):
+  - 报告:`pnpm run coverage`(`node --import tsx --test --experimental-test-coverage tests/*.test.ts`);
+  - 阈值硬门禁(同命令,阈值参数固化于 package.json):`--test-coverage-branches=85 --test-coverage-functions=85 --test-coverage-lines=85`。
 - CI(`.github/workflows/ci.yml`)同步执行:typecheck → build → test → coverage(≥85%)→ lint → check:size。
 - 提 issue / 评论遵循 `docs/issue-contract.md` 与仓库 mutation 工作流(刷新 → 预览 → 授权 → 回读验证)。
 - 功能开发必须动作命令化,保持「面板按钮与对话命令共享同一后端动作」。
