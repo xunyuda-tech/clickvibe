@@ -15,6 +15,7 @@ import {
   V02_OFFLINE_HOST_DECLARATION,
 } from '../src/infra/v02-generation-fence.ts'
 import { repoNodeArgs } from './helpers/repo-node-args.ts'
+import { spawnTestPeer } from './helpers/test-peer.ts'
 
 test('online upgrade stays disabled until the host registers a real generation capability', async () => {
   resetV02GenerationFenceForTest()
@@ -81,13 +82,14 @@ test('facts-changed and failed-before-journal release reopen the in-process star
 
 test('process enumeration finds a real legacy ClickVibe process and fence waits fail closed', async () => {
   resetV02GenerationFenceForTest()
-  const child = spawn(
+  const peer = spawnTestPeer(
     process.execPath,
     ['-e', "console.log('READY'); setInterval(() => {}, 1000)", 'clickvibe-v0.1-plugin'],
     { stdio: ['ignore', 'pipe', 'pipe'] },
   )
+  const child = peer.process
   try {
-    await once(child.stdout, 'data')
+    await peer.awaitResponse(once(child.stdout, 'data'), 'READY on stdout')
     const observed = await enumerateLegacyClickVibeProcesses()
     assert.equal(
       observed.some((entry) => entry.includes(String(child.pid))),
